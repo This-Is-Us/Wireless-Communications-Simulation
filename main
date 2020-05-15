@@ -1,0 +1,272 @@
+%=========================================Part1============-============================%
+%=======================计算固定信道分配与BDCL理论分析的阻塞概率========================%
+%==================================Author: Haoyu Dai====================================%
+%================================Latest Update: 2020/5/9================================%
+increment = 1:50; %负载的增量(%)
+FCA_1=zeros(1,50); %图一中的FCA
+FCA_2=zeros(1,50); %图二中的FCA
+BDCL_1=zeros(1,50); %图一中的BDCL曲线
+BDCL_2=zeros(1,50); %图二中的BDCL
+BDCL_3_CELL1=zeros(1,50); %图三中的蜂窝1
+BDCL_3_CELL30=zeros(1,50); %图三中的蜂窝30
+BDCL_3_CELL10=zeros(1,50); %图三中的蜂窝10
+for i=1:50
+    [FCA_1(i),FCA_2(i)]=FCA(increment(i));
+    [BDCL_1(i),BDCL_2(i),BDCL_3_CELL1(i),BDCL_3_CELL10(i),BDCL_3_CELL30(i)]=BDCL(increment(i));
+end
+
+%=========================================Part2============-============================%
+%============================BDCL实际情况仿真与阻塞概率计算=============================%
+%===================simulation_flag=0画图1，simulation_flag=1画图2图3===================%
+%=================================Author: Zhixuan Tang==================================%
+%================================Latest Update: 2020/5/10===============================%
+
+Cell_num = 30; %小区数量
+M = 10; %信道数量2M=20
+Mean_duration = 180; %呼叫持续时间满足指数分布，期望为3min即180s
+State = zeros(Cell_num,2*M); %State第i行代表第i个小区的信道使用状态，1代表占用，0代表空闲/被借用/被锁定
+n = 500; %生成n个呼叫的到达时间
+simul_time = 10; %增加负载的仿真次数
+times = 20; %每个负载状况下重复仿真的次数，阻塞概率取多次仿真的平均值
+simulation_flag = 1;
+if ~simulation_flag
+    Lambda_init = (1/36)*ones(1,Cell_num); %每个小区的泊松到达速率，单位为calls/s
+    MU_init = 36*ones(1,Cell_num); %满足指数分布的时间间隔的期望，即lambda的倒数，单位为s
+else
+    Lambda_init = [120,100,80,80,90,100,90,130,120,60,40,60,80,100,80,120,100,60,60,80,120,100,80,60,60,80,100,100,80,120]./3600;
+    MU_init = 3600./[120,100,80,80,90,100,90,130,120,60,40,60,80,100,80,120,100,60,60,80,120,100,80,60,60,80,100,100,80,120];
+end
+
+Calls = zeros(2*Cell_num,n);
+%2i-1行k列代表小区i的第k次呼叫到达的时间点（s），时间间隔满足指数分布，期望为MU
+%2i行为从小到大排列的结束时间，呼叫持续时间满足指数分布,期望为Mean_duration
+P_Block = zeros(times,Cell_num); %某负载下每次仿真的各小区阻塞概率
+P_Block_average = zeros(1,times); %某负载下每次仿真的平均阻塞概率
+P_Block_final = zeros(1,simul_time+1); %不同负载下的平均阻塞概率，是多次仿真取平均的结果
+P_Block_first = zeros(1,simul_time+1); %不同负载下最左边小区的阻塞概率，是多次仿真取平均的结果
+P_Block_last = zeros(1,simul_time+1); %不同负载下最右边小区的阻塞概率
+P_Block_10 = zeros(1,simul_time+1); %不同负载下小区10的阻塞概率
+
+for t = 0:simul_time %每次仿真负载增加5%
+    for k = 1:times
+        Lambda = (1+0.05*t)*Lambda_init;
+        MU = MU_init/(1+0.05*t);
+        for i = 1:Cell_num
+            for j = 1:n
+                if j == 1
+                    Calls(2*i-1,j) = roundn(exprnd(MU(i)),-1); %保留两位小数
+                    Calls(2*i,j) = roundn(Calls(2*i-1,j)+exprnd(Mean_duration),-1);
+                else
+                    Calls(2*i-1,j) = roundn(Calls(2*i-1,j-1)+exprnd(MU(i)),-1); %上一次呼叫时间点加时间间隔
+                    Calls(2*i,j) = roundn(Calls(2*i-1,j)+exprnd(Mean_duration),-1); %呼叫时间点加呼叫持续时间
+                end
+            end
+        end
+        %=================================模拟泊松到达过程开始，每次循环为1s=================================
+        Index_call = ones(1,Cell_num); %每个小区已到达的呼叫个数+1
+        Blockings = zeros(1,Cell_num); %记录每个小区有多少个呼叫阻塞
+        for i = 0:0.1:7200 %时间步长足够小以至于每个时间点最多有一个呼叫/到达（步长为1s太大）
+            for j = 1:Cell_num
+                %先判定结束再判定到达，如果一时间点同时有呼叫和结束，则先释放信道再分配信道，可以降低阻塞概率
+                if abs(i - min(Calls(2*j,1:Index_call(j)))) < 0.1
+                    Index = find(Calls(2*j,1:Index_call(j)) == min(Calls(2*j,1:Index_call(j)))); %找出最近呼叫时间在向量中的位置
+                    Calls(2*j,Index) = Inf; %将此结束时间从向量中剔除
+                    %判断是否有借取信道需要归还
+                    if Need_Return(State,j,2*M)
+                        State(j,:) = Return(State,j,2*M);
+                    else
+                        State(j,:) = Free(State,j,2*M);
+                    end
+                end
+                if abs(i - Calls(2*j-1,Index_call(j))) < 0.1 %有呼叫到达，注意不能用==判断两个浮点数是否相等
+                    Index_call(j) = 1+Index_call(j);
+                    %判断是否阻塞
+                    if Is_Blocking(State,j,Cell_num) %阻塞则阻塞数量加一
+                        Blockings(j) = 1+Blockings(j); 
+                        Calls(2*j,Index_call(j)) = Inf; %阻塞的呼叫不再存在离开时间点，将对应的结束时间剔除
+                    else %不阻塞则进一步判定是否需要借用
+                        if Is_Borrowing(State,j,2*M)
+                            State(j,:) =  Borrow(State,j,2*M);
+                        else
+                            State(j,:) = Allocate(State,j,2*M);
+                        end
+                    end
+                end
+            end
+        end
+        State = zeros(Cell_num,2*M); %信道使用状态归零
+        P_Block(k,:) = Blockings./(Index_call-1); %元素代表每个小区的阻塞概率
+        P_Block_average(k) = sum(P_Block(k,:).*Lambda)/sum(Lambda);
+    end
+    P_Block_final(t+1) = sum(P_Block_average)/times;
+    P_Block_first(t+1) = sum(P_Block(:,1))/times;
+    P_Block_last(t+1) = sum(P_Block(:,Cell_num))/times;
+    P_Block_10(t+1) = sum(P_Block(:,10))/times;
+end
+
+if ~simulation_flag %flag为0则画图1
+    figure(1)
+    plot(increment,FCA_1,'r'); %图一中的FCA
+    hold on
+    plot(increment,BDCL_1,'g'); %图一中的BDCL曲线
+    hold on
+    plot(0:5:simul_time*5,P_Block_final,'k*')
+    hold on
+    legend('FCA', 'BDCL','Simulation Result')
+    xlable('% Load Increase')
+    ylable('Blocking Probability')
+else %flag为1则画图2、图3
+    figure(1)
+    plot(increment,FCA_2,'r'); %图一中的FCA
+    hold on
+    plot(increment,BDCL_2,'g'); %图一中的BDCL曲线
+    hold on
+    plot(0:5:simul_time*5,P_Block_final,'k*')
+    hold on
+    legend('FCA', 'BDCL','Simulation Result')
+    xlabel('% Load Increase')
+    ylabel('Blocking Probability')
+    
+    figure(2)
+    plot(increment,BDCL_3_CELL1,'r','linewidth',2.5); %小区1理论值
+    hold on
+    plot(0:5:simul_time*5,P_Block_first,'m*-','linewidth',1.5) %小区1仿真结果
+    hold on
+    plot(increment,BDCL_3_CELL30,'g','linewidth',2.5); %小区30理论值
+    hold on
+    plot(0:5:simul_time*5,P_Block_last,'co-','linewidth',1.5) %小区30仿真结果
+    hold on
+    plot(increment,BDCL_3_CELL10,'b','linewidth',2.5); %小区10理论值
+    hold on
+    plot(0:5:simul_time*5,P_Block_10,'k+-','linewidth',1.5) %小区10仿真结果
+    hold on
+    legend('Cell 1','Cell 1 Simul','Cell 30','Cell 30 Simul','Cell 10','Cell 10 Simul')
+    xlabel('% Load Increase')
+    ylabel('Blocking Probability')
+end
+
+
+
+function x = Is_Blocking(StateMatrix,i,cell_num)
+%判断到达小区i的呼叫是否阻塞
+%StateMatrix为状态矩阵,cell_num为小区总数
+%若x=0则代表有空闲信道，接纳，否则阻塞
+    if i == 1
+        temp = StateMatrix(i,:) + StateMatrix(i+1,:);
+    elseif i == cell_num
+        temp = StateMatrix(i-1,:) + StateMatrix(i,:);
+    else
+        temp = StateMatrix(i-1,:) + StateMatrix(i,:) + StateMatrix(i+1,:);
+    end
+    x = min(temp);
+end
+
+function x = Is_Borrowing(StateMatrix,i,channel_num)
+%判断小区i接受呼叫是否需要借用信道
+%StateMatrix为状态矩阵,channel_num为信道总数
+%若x=0则不需要借用，x=1则需要借用
+    if (mod(i,2)==0) && min(StateMatrix(i,1:channel_num/2)) %i是偶数且前m个信道全部占用(全是1)，则需要借用
+        x = 1;
+    elseif (mod(i,2)==1) && min(StateMatrix(i,channel_num/2+1:channel_num)) %i是奇数且后m个信道全部占用(全是1)
+        x = 1;
+    else
+        x = 0;
+    end
+end
+
+function x = Need_Return(StateMatrix,i,channel_num)
+%判断小区i是否有借用的信道需要归还
+%StateMatrix为状态矩阵,channel_num为信道总数
+%x=1则需要归还，x=0无借用信道
+    if (mod(i,2)==0) && max(StateMatrix(i,channel_num/2+1:channel_num)) %i是偶数且有借用的信道(后m个元素中有1)
+        x = 1;
+    elseif (mod(i,2)==1) && max(StateMatrix(i,1:channel_num/2)) %i是奇数且有借用的信道(前m个元素中有1)
+        x = 1;
+    else
+        x = 0;
+    end
+end
+
+function Cell_State = Allocate(StateMatrix,i,channel_num)
+%分配小区i的本地信道给到达的呼叫
+%返回小区i新的状态向量
+    if mod(i,2)==0
+        for k = 1:channel_num/2%根据信道立即重分配原则，将序号最小的可用信道分配给呼叫
+            if StateMatrix(i,k) == 0
+                StateMatrix(i,k) = 1;
+                break;
+            end
+        end
+    else
+        for k = channel_num/2+1:channel_num
+            if StateMatrix(i,k) == 0
+                StateMatrix(i,k) = 1;
+                break;
+            end
+        end
+    end   
+    Cell_State = StateMatrix(i,:);
+end
+
+function Cell_State = Borrow(StateMatrix,i,channel_num)
+%借用信道给到达的呼叫
+%返回小区i新的状态向量
+    if mod(i,2)==0
+        for k = channel_num:-1:channel_num/2+1
+            if StateMatrix(i,k) == 0
+                StateMatrix(i,k)=1;
+                break;
+            end
+        end
+    else
+        for k = channel_num/2:-1:1
+            if StateMatrix(i,k) == 0
+                StateMatrix(i,k) = 1;
+                break;
+            end
+        end
+    end
+    Cell_State = StateMatrix(i,:);
+end
+
+function Cell_State = Free(StateMatrix,i,channel_num)
+%释放本地信道
+%返回小区i新的状态向量
+    if mod(i,2)==0
+        for k = channel_num/2:-1:1 %根据信道立即重分配原则，将序号最大的占用信道释放
+            if StateMatrix(i,k) == 1
+                StateMatrix(i,k) = 0;
+                break;
+            end
+        end
+    else
+        for k = channel_num:-1:channel_num/2+1
+            if StateMatrix(i,k) == 1
+                StateMatrix(i,k) = 0;
+                break;
+            end
+        end
+    end   
+    Cell_State = StateMatrix(i,:);
+end
+
+function Cell_State = Return(StateMatrix,i,channel_num)
+%归还借用的信道
+%返回小区i新的状态向量
+    if mod(i,2)==0
+        for k = channel_num/2+1:channel_num %根据信道立即重分配原则，将序号最小的接取信道归还
+            if StateMatrix(i,k) == 1
+                StateMatrix(i,k) = 0;
+                break;
+            end
+        end
+    else
+        for k = 1:channel_num/2
+            if StateMatrix(i,k) == 1
+                StateMatrix(i,k) = 0;
+                break;
+            end
+        end
+    end   
+    Cell_State = StateMatrix(i,:);
+end
