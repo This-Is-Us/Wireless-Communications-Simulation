@@ -1,0 +1,13 @@
+clear;
+B_mean=zeros(1,11);
+inc=0:5:50;
+
+for i=1:11
+    for k=1:20
+        B_mean(i)=B_mean(i)+BDCL(inc(i));
+    end    
+    B_mean(i)=B_mean(i)/20;
+end
+    
+figure;
+plot(inc,B_mean);  %图一中的BDCL曲线
